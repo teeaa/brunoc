@@ -118,13 +118,6 @@ func convertBruToData(blocks []BruBlock) BruData {
 
 	for _, block := range blocks {
 		name := strings.TrimSpace(block.Name)
-		if strings.HasPrefix(name, "body:") {
-			btype := strings.TrimPrefix(name, "body:")
-			data.Body["type"] = btype
-			data.Body["content"] = strings.TrimSpace(block.Content)
-			continue
-		}
-
 		switch name {
 		case "meta":
 			data.Name = extractValue(block.Content, "name")
