@@ -222,11 +222,12 @@ func buildGRPC(data BruData) *OCGrpc {
 		Method:     data.GRPC["method"],
 		MethodType: data.GRPC["methodType"],
 	}
-	if btype, ok := data.Body["type"].(string); ok && btype != "" {
-		if content, ok := data.Body["content"].(string); ok && content != "" {
-			msg := extractGRPCMessage(content)
+	if len(data.Bodies) > 0 {
+		body := data.Bodies[0]
+		if body.Type != "" && body.Content != "" {
+			msg := extractGRPCMessage(body.Content)
 			if msg == "" {
-				msg = cleanBlockContent(content)
+				msg = cleanBlockContent(body.Content)
 			}
 			grpc.Message = msg
 		}
@@ -248,11 +249,21 @@ func buildHTTP(data BruData) *OCHttp {
 		Params:  []OCParam{},
 	}
 
-	if btype, ok := data.Body["type"].(string); ok && btype != "" {
-		if content, ok := data.Body["content"].(string); ok && content != "" {
-			h.Body = buildHTTPBody(btype, content)
+	if len(data.Bodies) > 0 {
+		var bodies []interface{}
+		for _, b := range data.Bodies {
+			if b.Type != "" && b.Content != "" {
+				bodies = append(bodies, buildHTTPBody(b.Type, b.Content))
+			}
+		}
+
+		if len(bodies) == 1 {
+			h.Body = bodies[0]
+		} else if len(bodies) > 1 {
+			h.Body = bodies
 		}
 	}
+
 	return h
 }
 
