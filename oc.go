@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sort"
 	"strings"
 )
 
@@ -58,6 +59,12 @@ type OCParam struct {
 	Type  string `yaml:"type,omitempty"`
 }
 
+type OCBody struct {
+	Type string    `yaml:"type"`
+	Data string    `yaml:"data,omitempty"`
+	Form []OCParam `yaml:"form,omitempty"`
+}
+
 type OCHttp struct {
 	Method  string      `yaml:"method"`
 	URL     string      `yaml:"url"`
@@ -105,199 +112,226 @@ type OCRequest struct {
 	Settings *OCSettings `yaml:"settings,omitempty"`
 }
 
-func generateYAML(data BruData) (string, error) {
-	if data.Variables != nil && data.Method == "" && data.URL == "" && len(data.GRPC) == 0 && data.Type == "" {
-		out := OCEnvironment{
-			Name:      data.Name,
-			Variables: []OCParam{},
-		}
+// isEnvironment reports whether data represents an environment/variables file
+// rather than a request file.
+func isEnvironment(data BruData) bool {
+	return data.Variables != nil && data.Method == "" && data.URL == "" && len(data.GRPC) == 0 && data.Type == ""
+}
 
-		for k, v := range data.Variables {
-			out.Variables = append(out.Variables, OCParam{Name: k, Value: v})
-		}
-
-		bytes, err := MarshalYAMLWithIndent(out)
-		if err != nil {
-			return "", err
-		}
-
-		return string(bytes), nil
+// inferRequestType returns the request type, falling back to inference when
+// not explicitly set in the source data.
+func inferRequestType(data BruData) string {
+	if data.Type != "" {
+		return data.Type
 	}
-
-	out := OCRequest{
-		Info: OCInfo{
-			Name: data.Name,
-			Type: data.Type,
-			Seq:  data.Seq,
-		},
-		Runtime: OCRuntime{
-			Variables:  []OCParam{},
-			Scripts:    []OCScript{},
-			Assertions: []string{},
-		},
+	if len(data.GRPC) > 0 {
+		return "grpc"
 	}
+	return "http"
+}
 
-	if data.Type == "" {
-		if data.Method != "" || data.URL != "" {
-			out.Info.Type = "http"
-		} else if len(data.GRPC) > 0 {
-			out.Info.Type = "grpc"
-		} else {
-			out.Info.Type = "http"
-		}
+// normalizeGRPCURL converts a grpc:// URL to http:// (localhost) or https://.
+func normalizeGRPCURL(url string) string {
+	if !strings.HasPrefix(url, "grpc://") {
+		return url
 	}
+	rest := strings.TrimPrefix(url, "grpc://")
+	if strings.Contains(rest, "localhost") || strings.Contains(rest, "127.0.0.1") {
+		return "http://" + rest
+	}
+	return "https://" + rest
+}
 
-	if out.Info.Type == "grpc" {
-		url := data.GRPC["url"]
-		if strings.HasPrefix(url, "grpc://") {
-			if strings.Contains(url, "localhost") || strings.Contains(url, "127.0.0.1") {
-				url = "http://" + strings.TrimPrefix(url, "grpc://")
-			} else {
-				url = "https://" + strings.TrimPrefix(url, "grpc://")
+// extractGRPCMessage extracts the message body from a gRPC body block,
+// stripping triple-quote delimiters if present. Returns an empty string if
+// no content: key is found.
+func extractGRPCMessage(content string) string {
+	lines := strings.Split(content, "\n")
+	var result []string
+	inContent := false
+
+	for _, line := range lines {
+		if !inContent {
+			idx := strings.Index(line, "content:")
+			if idx == -1 {
+				continue
 			}
-		}
-
-		out.Grpc = &OCGrpc{
-			URL:        url,
-			Method:     data.GRPC["method"],
-			MethodType: data.GRPC["methodType"],
-		}
-
-		if btypeObj, ok := data.Body["type"]; ok && btypeObj != nil && btypeObj != "" {
-			if content, ok := data.Body["content"].(string); ok && content != "" {
-				actualContent := ""
-				lines := strings.Split(content, "\n")
-				inContent := false
-				var contentLines []string
-				for _, line := range lines {
-					if strings.Contains(line, "content:") {
-						inContent = true
-						idx := strings.Index(line, "content:")
-						c := line[idx+8:]
-						c = strings.TrimSpace(c)
-						if strings.HasPrefix(c, "'''") || strings.HasPrefix(c, "\"\"\"") {
-							c = c[3:]
-						}
-						if (strings.HasSuffix(c, "'''") || strings.HasSuffix(c, "\"\"\"")) && len(c) >= 3 {
-							c = c[:len(c)-3]
-							inContent = false
-						}
-						if c != "" {
-							contentLines = append(contentLines, c)
-						}
-						continue
-					}
-					if inContent {
-						if strings.Contains(line, "'''") || strings.Contains(line, "\"\"\"") {
-							idx := strings.Index(line, "'''")
-							if idx == -1 {
-								idx = strings.Index(line, "\"\"\"")
-							}
-							c := line[:idx]
-							contentLines = append(contentLines, c)
-							inContent = false
-						} else {
-							contentLines = append(contentLines, line)
-						}
-					}
+			c := strings.TrimSpace(line[idx+8:])
+			if strings.HasPrefix(c, "'''") || strings.HasPrefix(c, `"""`) {
+				c = c[3:]
+			}
+			if (strings.HasSuffix(c, "'''") || strings.HasSuffix(c, `"""`)) && len(c) >= 3 {
+				c = c[:len(c)-3]
+				if c != "" {
+					result = append(result, c)
 				}
-				if len(contentLines) > 0 {
-					actualContent = strings.Join(contentLines, "\n")
-					out.Grpc.Message = cleanBlockContent(actualContent)
-				} else {
-					out.Grpc.Message = cleanBlockContent(content)
-				}
+				break
+			}
+			inContent = true
+			if c != "" {
+				result = append(result, c)
+			}
+			continue
+		}
+
+		if strings.Contains(line, "'''") || strings.Contains(line, `"""`) {
+			idx := strings.Index(line, "'''")
+			if idx == -1 {
+				idx = strings.Index(line, `"""`)
+			}
+			result = append(result, line[:idx])
+			break
+		}
+		result = append(result, line)
+	}
+
+	return cleanBlockContent(strings.Join(result, "\n"))
+}
+
+// scriptType maps a Bruno script block type to the OC script type name.
+func scriptType(bruType string) string {
+	if bruType == "post-response" || bruType == "res" {
+		return "after-response"
+	}
+	return "before-request"
+}
+
+// buildHTTPBody constructs the body map for an HTTP request.
+func buildHTTPBody(btype, content string) interface{} {
+	switch btype {
+	case "multipart-form":
+		pairs := parseKeyValuePairs(content)
+		keys := sortedKeys(pairs)
+		params := make([]OCParam, 0, len(pairs))
+		for _, k := range keys {
+			params = append(params, OCParam{Name: k, Value: pairs[k], Type: "form"})
+		}
+		return OCBody{Type: "multipartForm", Form: params}
+	case "json":
+		return OCBody{Type: "json", Data: cleanBlockContent(content)}
+	case "xml":
+		return OCBody{Type: "xml", Data: cleanBlockContent(content)}
+	case "text":
+		return OCBody{Type: "text", Data: cleanBlockContent(content)}
+	case "form-urlencoded":
+		return OCBody{Type: "formUrlEncoded", Data: cleanBlockContent(content)}
+	case "graphql":
+		return OCBody{Type: "graphql", Data: cleanBlockContent(content)}
+	}
+	return nil
+}
+
+// buildGRPC constructs the gRPC request object from BruData.
+func buildGRPC(data BruData) *OCGrpc {
+	grpc := &OCGrpc{
+		URL:        normalizeGRPCURL(data.GRPC["url"]),
+		Method:     data.GRPC["method"],
+		MethodType: data.GRPC["methodType"],
+	}
+	if len(data.Bodies) > 0 {
+		body := data.Bodies[0]
+		if body.Type != "" && body.Content != "" {
+			msg := extractGRPCMessage(body.Content)
+			if msg == "" {
+				msg = cleanBlockContent(body.Content)
+			}
+			grpc.Message = msg
+		}
+	}
+	return grpc
+}
+
+// buildHTTP constructs the HTTP request object from BruData.
+func buildHTTP(data BruData) *OCHttp {
+	headers := make([]OCHeader, 0, len(data.Headers))
+	for _, k := range sortedKeys(data.Headers) {
+		headers = append(headers, OCHeader{Name: k, Value: data.Headers[k]})
+	}
+
+	h := &OCHttp{
+		Method:  data.Method,
+		URL:     data.URL,
+		Headers: headers,
+		Params:  []OCParam{},
+	}
+
+	if len(data.Bodies) > 0 {
+		var selected *BruBody
+		for _, b := range data.Bodies {
+			if b.Type == "json" && b.Content != "" {
+				selected = &b
+				break
 			}
 		}
 
-	} else {
-		out.Http = &OCHttp{
-			Method: data.Method,
-			URL:    data.URL,
-		}
-
-		if len(data.Headers) > 0 {
-			for k, v := range data.Headers {
-				out.Http.Headers = append(out.Http.Headers, OCHeader{Name: k, Value: v})
-			}
-		} else {
-			out.Http.Headers = []OCHeader{}
-		}
-
-		out.Http.Params = []OCParam{}
-
-		btypeObj, ok := data.Body["type"]
-		if ok && btypeObj != nil && btypeObj != "" {
-			btype := btypeObj.(string)
-
-			content, ok := data.Body["content"].(string)
-			if ok && content != "" {
-				switch btype {
-				case "multipart-form":
-					pairs := parseKeyValuePairs(content)
-					var multipart []OCParam
-					for k, v := range pairs {
-						multipart = append(multipart, OCParam{Name: k, Value: v, Type: "form"})
-					}
-					out.Http.Body = map[string]interface{}{
-						"type": "multipartForm",
-						"form": multipart,
-					}
-				case "json":
-					out.Http.Body = map[string]interface{}{
-						"type": "json",
-						"data": cleanBlockContent(content),
-					}
-				case "xml":
-					out.Http.Body = map[string]interface{}{
-						"type": "xml",
-						"data": cleanBlockContent(content),
-					}
-				case "text":
-					out.Http.Body = map[string]interface{}{
-						"type": "text",
-						"data": cleanBlockContent(content),
-					}
-				case "form-urlencoded":
-					out.Http.Body = map[string]interface{}{
-						"type": "formUrlEncoded",
-						"data": cleanBlockContent(content),
-					}
-				case "graphql":
-					out.Http.Body = map[string]interface{}{
-						"type": "graphql",
-						"data": cleanBlockContent(content),
-					}
+		if selected == nil {
+			for _, b := range data.Bodies {
+				if b.Type != "" && b.Content != "" {
+					selected = &b
+					break
 				}
 			}
 		}
-	}
 
-	if data.Variables != nil {
-		for k, v := range data.Variables {
-			out.Runtime.Variables = append(out.Runtime.Variables, OCParam{Name: k, Value: v})
+		if selected != nil {
+			h.Body = buildHTTPBody(selected.Type, selected.Content)
 		}
 	}
 
-	if len(data.Scripts) > 0 {
-		for k, v := range data.Scripts {
-			scriptType := "before-request"
-			if k == "post-response" || k == "res" {
-				scriptType = "after-response"
-			}
+	return h
+}
 
-			out.Runtime.Scripts = append(out.Runtime.Scripts, OCScript{
-				Type: scriptType,
-				Code: cleanBlockContent(v),
-			})
-		}
+// buildRuntime constructs the runtime section (variables, scripts, tests).
+func buildRuntime(data BruData) OCRuntime {
+	rt := OCRuntime{
+		Variables:  []OCParam{},
+		Scripts:    []OCScript{},
+		Assertions: []string{},
+	}
+
+	for _, k := range sortedKeys(data.Variables) {
+		rt.Variables = append(rt.Variables, OCParam{Name: k, Value: data.Variables[k]})
+	}
+
+	for _, k := range sortedKeys(data.Scripts) {
+		rt.Scripts = append(rt.Scripts, OCScript{
+			Type: scriptType(k),
+			Code: cleanBlockContent(data.Scripts[k]),
+		})
 	}
 
 	if data.Tests != "" {
-		out.Runtime.Assertions = append(out.Runtime.Assertions, cleanBlockContent(data.Tests))
+		rt.Assertions = append(rt.Assertions, cleanBlockContent(data.Tests))
+	}
+	return rt
+}
+
+func generateEnvironmentYAML(data BruData) (string, error) {
+	out := OCEnvironment{
+		Name:      data.Name,
+		Variables: make([]OCParam, 0, len(data.Variables)),
+	}
+	for _, k := range sortedKeys(data.Variables) {
+		out.Variables = append(out.Variables, OCParam{Name: k, Value: data.Variables[k]})
+	}
+	b, err := marshalYAML(out)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func generateRequestYAML(data BruData) (string, error) {
+	reqType := inferRequestType(data)
+	out := OCRequest{
+		Info:    OCInfo{Name: data.Name, Type: reqType, Seq: data.Seq},
+		Runtime: buildRuntime(data),
 	}
 
-	if out.Info.Type == "http" {
+	if reqType == "grpc" {
+		out.Grpc = buildGRPC(data)
+	} else {
+		out.Http = buildHTTP(data)
 		out.Settings = &OCSettings{
 			EncodeUrl:       true,
 			Timeout:         30000,
@@ -306,65 +340,80 @@ func generateYAML(data BruData) (string, error) {
 		}
 	}
 
-	bytes, err := MarshalYAMLWithIndent(out)
+	b, err := marshalYAML(out)
 	if err != nil {
 		return "", err
 	}
-
-	return string(bytes), nil
+	return string(b), nil
 }
 
+// generateYAML converts BruData to a YAML string, producing either an
+// environment or request document depending on the data.
+func generateYAML(data BruData) (string, error) {
+	if isEnvironment(data) {
+		return generateEnvironmentYAML(data)
+	}
+	return generateRequestYAML(data)
+}
+
+// sortedKeys returns the keys of a map[string]string in sorted order.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// minLeadingWhitespace returns the count of leading space/tab characters on
+// the shortest non-blank line in lines, or -1 if all lines are blank.
+func minLeadingWhitespace(lines []string) int {
+	min := -1
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		n := len(line) - len(strings.TrimLeft(line, " \t"))
+		if min == -1 || n < min {
+			min = n
+		}
+	}
+	return min
+}
+
+// cleanBlockContent normalises indentation and removes leading/trailing blank
+// lines from a block of code or text.
 func cleanBlockContent(content string) string {
 	lines := strings.Split(content, "\n")
-	start := 0
-	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+
+	start, end := 0, len(lines)-1
+	for start <= end && strings.TrimSpace(lines[start]) == "" {
 		start++
 	}
-
-	end := len(lines) - 1
 	for end >= start && strings.TrimSpace(lines[end]) == "" {
 		end--
 	}
-
 	if start > end {
 		return ""
 	}
 
-	minIndent := -1
-	for i := start; i <= end; i++ {
-		line := lines[i]
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-
-		indentCount := 0
-		for _, char := range line {
-			if char == ' ' || char == '\t' {
-				indentCount++
-			} else {
-				break
-			}
-		}
-
-		if minIndent == -1 || indentCount < minIndent {
-			minIndent = indentCount
-		}
+	trimmed := lines[start : end+1]
+	indent := minLeadingWhitespace(trimmed)
+	if indent < 0 {
+		indent = 0
 	}
 
 	var sb strings.Builder
-	for i := start; i <= end; i++ {
-		line := lines[i]
-		trimmedLine := ""
-
-		if len(line) > minIndent && minIndent != -1 {
-			trimmedLine = line[minIndent:]
+	for i, line := range trimmed {
+		if len(line) > indent {
+			sb.WriteString(line[indent:])
 		} else {
-			trimmedLine = strings.TrimSpace(line)
+			sb.WriteString(strings.TrimSpace(line))
 		}
-
-		sb.WriteString(trimmedLine)
-		sb.WriteString("\n")
+		if i < len(trimmed)-1 {
+			sb.WriteByte('\n')
+		}
 	}
-
 	return sb.String()
 }

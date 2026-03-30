@@ -11,6 +11,11 @@ type BruBlock struct {
 	Content string
 }
 
+type BruBody struct {
+	Type    string
+	Content string
+}
+
 type BruData struct {
 	Name      string
 	Type      string
@@ -18,7 +23,7 @@ type BruData struct {
 	Method    string
 	URL       string
 	Headers   map[string]string
-	Body      map[string]interface{}
+	Bodies    []BruBody
 	Scripts   map[string]string
 	Tests     string
 	Variables map[string]string
@@ -106,7 +111,7 @@ func parseBru(content string) []BruBlock {
 func convertBruToData(blocks []BruBlock) BruData {
 	data := BruData{
 		Headers: make(map[string]string),
-		Body:    make(map[string]interface{}),
+		Bodies:  make([]BruBody, 0),
 		Scripts: make(map[string]string),
 		GRPC:    make(map[string]string),
 	}
@@ -120,8 +125,10 @@ func convertBruToData(blocks []BruBlock) BruData {
 		name := strings.TrimSpace(block.Name)
 		if strings.HasPrefix(name, "body:") {
 			btype := strings.TrimPrefix(name, "body:")
-			data.Body["type"] = btype
-			data.Body["content"] = strings.TrimSpace(block.Content)
+			data.Bodies = append(data.Bodies, BruBody{
+				Type:    btype,
+				Content: strings.TrimSpace(block.Content),
+			})
 			continue
 		}
 
@@ -141,10 +148,10 @@ func convertBruToData(blocks []BruBlock) BruData {
 		case "vars":
 			data.Variables = parseKeyValuePairs(block.Content)
 		case "body":
-			if data.Body["type"] == nil {
-				data.Body["type"] = block.Type
-			}
-			data.Body["content"] = strings.TrimSpace(block.Content)
+			data.Bodies = append(data.Bodies, BruBody{
+				Type:    block.Type,
+				Content: strings.TrimSpace(block.Content),
+			})
 		case "tests":
 			data.Tests = strings.TrimSpace(block.Content)
 		case "script":
