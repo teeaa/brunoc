@@ -391,13 +391,15 @@ func cleanBlockContent(content string) string {
 	}
 
 	var sb strings.Builder
-	for _, line := range trimmed {
+	for i, line := range trimmed {
 		if len(line) > indent {
 			sb.WriteString(line[indent:])
 		} else {
 			sb.WriteString(strings.TrimSpace(line))
 		}
-		sb.WriteByte('\n')
+		if i < len(trimmed)-1 {
+			sb.WriteByte('\n')
+		}
 	}
 	return sb.String()
 }
