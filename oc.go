@@ -59,6 +59,12 @@ type OCParam struct {
 	Type  string `yaml:"type,omitempty"`
 }
 
+type OCBody struct {
+	Type string    `yaml:"type"`
+	Data string    `yaml:"data,omitempty"`
+	Form []OCParam `yaml:"form,omitempty"`
+}
+
 type OCHttp struct {
 	Method  string      `yaml:"method"`
 	URL     string      `yaml:"url"`
@@ -200,17 +206,17 @@ func buildHTTPBody(btype, content string) interface{} {
 		for _, k := range keys {
 			params = append(params, OCParam{Name: k, Value: pairs[k], Type: "form"})
 		}
-		return map[string]interface{}{"type": "multipartForm", "form": params}
+		return OCBody{Type: "multipartForm", Form: params}
 	case "json":
-		return map[string]interface{}{"type": "json", "data": cleanBlockContent(content)}
+		return OCBody{Type: "json", Data: cleanBlockContent(content)}
 	case "xml":
-		return map[string]interface{}{"type": "xml", "data": cleanBlockContent(content)}
+		return OCBody{Type: "xml", Data: cleanBlockContent(content)}
 	case "text":
-		return map[string]interface{}{"type": "text", "data": cleanBlockContent(content)}
+		return OCBody{Type: "text", Data: cleanBlockContent(content)}
 	case "form-urlencoded":
-		return map[string]interface{}{"type": "formUrlEncoded", "data": cleanBlockContent(content)}
+		return OCBody{Type: "formUrlEncoded", Data: cleanBlockContent(content)}
 	case "graphql":
-		return map[string]interface{}{"type": "graphql", "data": cleanBlockContent(content)}
+		return OCBody{Type: "graphql", Data: cleanBlockContent(content)}
 	}
 	return nil
 }
