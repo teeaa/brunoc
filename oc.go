@@ -59,6 +59,12 @@ type OCParam struct {
 	Type  string `yaml:"type,omitempty"`
 }
 
+type OCBody struct {
+	Type string    `yaml:"type"`
+	Data string    `yaml:"data,omitempty"`
+	Form []OCParam `yaml:"form,omitempty"`
+}
+
 type OCHttp struct {
 	Method  string      `yaml:"method"`
 	URL     string      `yaml:"url"`
@@ -200,17 +206,17 @@ func buildHTTPBody(btype, content string) interface{} {
 		for _, k := range keys {
 			params = append(params, OCParam{Name: k, Value: pairs[k], Type: "form"})
 		}
-		return map[string]interface{}{"type": "multipartForm", "form": params}
+		return OCBody{Type: "multipartForm", Form: params}
 	case "json":
-		return map[string]interface{}{"type": "json", "data": cleanBlockContent(content)}
+		return OCBody{Type: "json", Data: cleanBlockContent(content)}
 	case "xml":
-		return map[string]interface{}{"type": "xml", "data": cleanBlockContent(content)}
+		return OCBody{Type: "xml", Data: cleanBlockContent(content)}
 	case "text":
-		return map[string]interface{}{"type": "text", "data": cleanBlockContent(content)}
+		return OCBody{Type: "text", Data: cleanBlockContent(content)}
 	case "form-urlencoded":
-		return map[string]interface{}{"type": "formUrlEncoded", "data": cleanBlockContent(content)}
+		return OCBody{Type: "formUrlEncoded", Data: cleanBlockContent(content)}
 	case "graphql":
-		return map[string]interface{}{"type": "graphql", "data": cleanBlockContent(content)}
+		return OCBody{Type: "graphql", Data: cleanBlockContent(content)}
 	}
 	return nil
 }
@@ -222,11 +228,12 @@ func buildGRPC(data BruData) *OCGrpc {
 		Method:     data.GRPC["method"],
 		MethodType: data.GRPC["methodType"],
 	}
-	if btype, ok := data.Body["type"].(string); ok && btype != "" {
-		if content, ok := data.Body["content"].(string); ok && content != "" {
-			msg := extractGRPCMessage(content)
+	if len(data.Bodies) > 0 {
+		body := data.Bodies[0]
+		if body.Type != "" && body.Content != "" {
+			msg := extractGRPCMessage(body.Content)
 			if msg == "" {
-				msg = cleanBlockContent(content)
+				msg = cleanBlockContent(body.Content)
 			}
 			grpc.Message = msg
 		}
@@ -248,11 +255,29 @@ func buildHTTP(data BruData) *OCHttp {
 		Params:  []OCParam{},
 	}
 
-	if btype, ok := data.Body["type"].(string); ok && btype != "" {
-		if content, ok := data.Body["content"].(string); ok && content != "" {
-			h.Body = buildHTTPBody(btype, content)
+	if len(data.Bodies) > 0 {
+		var selected *BruBody
+		for _, b := range data.Bodies {
+			if b.Type == "json" && b.Content != "" {
+				selected = &b
+				break
+			}
+		}
+
+		if selected == nil {
+			for _, b := range data.Bodies {
+				if b.Type != "" && b.Content != "" {
+					selected = &b
+					break
+				}
+			}
+		}
+
+		if selected != nil {
+			h.Body = buildHTTPBody(selected.Type, selected.Content)
 		}
 	}
+
 	return h
 }
 
@@ -380,13 +405,15 @@ func cleanBlockContent(content string) string {
 	}
 
 	var sb strings.Builder
-	for _, line := range trimmed {
+	for i, line := range trimmed {
 		if len(line) > indent {
 			sb.WriteString(line[indent:])
 		} else {
 			sb.WriteString(strings.TrimSpace(line))
 		}
-		sb.WriteByte('\n')
+		if i < len(trimmed)-1 {
+			sb.WriteByte('\n')
+		}
 	}
 	return sb.String()
 }
