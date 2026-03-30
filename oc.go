@@ -256,17 +256,25 @@ func buildHTTP(data BruData) *OCHttp {
 	}
 
 	if len(data.Bodies) > 0 {
-		var bodies []interface{}
+		var selected *BruBody
 		for _, b := range data.Bodies {
-			if b.Type != "" && b.Content != "" {
-				bodies = append(bodies, buildHTTPBody(b.Type, b.Content))
+			if b.Type == "json" && b.Content != "" {
+				selected = &b
+				break
 			}
 		}
 
-		if len(bodies) == 1 {
-			h.Body = bodies[0]
-		} else if len(bodies) > 1 {
-			h.Body = bodies
+		if selected == nil {
+			for _, b := range data.Bodies {
+				if b.Type != "" && b.Content != "" {
+					selected = &b
+					break
+				}
+			}
+		}
+
+		if selected != nil {
+			h.Body = buildHTTPBody(selected.Type, selected.Content)
 		}
 	}
 
